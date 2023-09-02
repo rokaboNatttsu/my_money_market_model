@@ -42,6 +42,10 @@ function update_estimate_corporateValue(agents, firms)
 end
 function update_portfolio_target(agents)
     for agent in agents
+        if agent.total_assets_log[end] <= 0
+            agent.portfolio_target[1:2] = [0,0]
+            continue
+        end
         agent.portfolio_target[1] = agent.total_assets_log[end] * agent.params[1]
         agent.portfolio_target[2] = agent.total_assets_log[end] * (1 - agent.params[1])
     end
@@ -70,7 +74,6 @@ function fundamentals_trade_offer(agent, firms, j)
         elseif β*estimated_value < marketCap
             push!(sell, (marketCap/estimated_value - β, i)) #   marketCap/estimated_value - β が大きいほど売りたい
         end
-        firm.buy_offers, firm.sell_offers = [], []
     end
     sort!(buy)
     sort!(sell)
@@ -90,22 +93,22 @@ function fundamentals_trade_offer(agent, firms, j)
         if flug
             flug = false
             for (i, q) in enumerate(agent.sharesQuantity)
-                if q > 0
+                if q > 0.0
                     push!(lst, (i,q))
                 end
             end
             shuffle(lst)
         end
+        if size(lst)[1] == 0
+            break
+        end
         i, quantity = pop!(lst)
         price = firms[i].stockPrice
         push!(firms[i].sell_offers, (price, quantity, j))
         going_to_sell_price += price * quantity
-        if size(lst)[1] == 0
-            break
-        end
     end
     while agent.money + going_to_sell_price - going_to_buy_price > agent.portfolio_target[1] && size(buy)[1] > 0
-        x, i = pop!(buy)
+        _, i = pop!(buy)
         marketCap = firms[i].marketCapitalization
         stockQuantity = firms[i].stockQuantity
         price = (estimated_value + marketCap)/(2*stockQuantity)
@@ -119,7 +122,7 @@ function index_trade_offer(agent, firms, j)
     if size(firms[1].stockPriceLog)[1] < span*6
         return nothing
     end
-    α5, α4, α3, α2, α1 = agent.params[3:7]    #   平均0標準偏差が1の条件を追加する
+    α5, α4, α3, α2, α1 = agent.params[3:7]
     α0 = agent.params[8]
     β1, β2 = agent.params[9:10]                #   β1<β2 の条件を追加する
     sell, buy = [], []
@@ -140,6 +143,9 @@ function index_trade_offer(agent, firms, j)
     while γ2 > going_to_buy_price && size(buy)[1] > 0
         p, i = pop!(buy)
         price = (1+p)*firms[i].stockPrice
+        if price <= 0
+            continue
+        end
         quantity = 1/agent.params[end]*agent.money/price
         going_to_buy_price += price*quantity
         if going_to_buy_price > agent.money
@@ -150,12 +156,18 @@ function index_trade_offer(agent, firms, j)
     while agent.money + going_to_sell_price - going_to_buy_price < agent.portfolio_target[1] && size(sell)[1] > 0
         p, i = pop!(sell)
         price = (1-p)*firms[i].stockPrice
+        if price <= 0
+            continue
+        end
         quantity = agent.sharesQuantity[i]
         going_to_buy_price += price*quantity
         push!(firms[i].sell_offers, (price, quantity, j))
     end
 end
 function trade_offer(agents, firms)
+    for firm in firms
+        firm.buy_offers, firm.sell_offers = [], []
+    end
     for (j, agent) in enumerate(agents)
         if agent.strategy == "fundamentals"
             fundamentals_trade_offer(agent, firms, j)
@@ -208,14 +220,19 @@ function trade_matching(agents, firms)
     end
 end
 function update_strategy(agents)
-    performance_lst = []
-    for (j, agent) in enumerate(agents)
-        push!(performance_lst, (agent.performance, j))
+    if size(agents[1].total_assets_log)[1] < 10
+        return nothing
     end
-    sort!(performance_lst)
+    performance10_lst = []
+    for (j, agent) in enumerate(agents)
+        performance10 = (agent.total_assets_log[end] - agent.total_assets_log[end-9])/agent.total_assets_log[end-9]
+        push!(performance10_lst, (performance10, j))
+    end
+    sort!(performance10_lst)
     A = Int(floor(size(agents)[1]/10))
+    best_agents = [pop!(performance10_lst)[2] for _ = 1:A]
     for agent in agents
-        teacher = rand(1:A)
+        teacher = rand(best_agents)
         if rand() < 0.05
             new_strategy = agents[teacher].strategy
             agent.strategy = new_strategy
@@ -252,8 +269,8 @@ function update_params(agents)
                 end
             end
             agent.params[3:7] += 0.01*randn(5)
-            agent.params[3:7] .-= mean(agent.params[3:7])
-            agent.params[3:7] ./= std(agent.params[3:7])
+            #agent.params[3:7] .-= mean(agent.params[3:7])
+            #agent.params[3:7] ./= std(agent.params[3:7])
             agent.params[8] += 0.01*randn()
             agent.params[9:10] += 0.01*randn(2)
             if agent.params[9] > agent.params[10]
@@ -290,7 +307,7 @@ agents = [
         init_money,
         [1.0 for _ = 1:M],
         [1.0 for _ = 1:M],
-        [init_money],
+        [2.0*init_money],
         [rand(), 1, randn(), randn(), randn(), randn(), randn(), 0.0, -0.01, 0.01, 0.5, 5],
         [init_money*N/M for _ = 1:M],
         [init_money, init_money],
@@ -304,7 +321,7 @@ for _ = 1:(N - Int(floor(N/2)))
             init_money,
             [1.0 for _ = 1:M],
             [1.0 for _ = 1:M],
-            [init_money],
+            [2.0*init_money],
             [rand(), 0.9, 1.1, 5],
             [init_money*N/M for _ = 1:M],
             [init_money, init_money],
@@ -325,8 +342,6 @@ firms = [
     ) for _ = 1:M
 ]
 
-for t = 1:100
+for t = 1:1000
     run_one_term(agents, firms)
 end
-
-plot(firms[1].stockPriceLog)
