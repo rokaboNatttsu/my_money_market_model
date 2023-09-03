@@ -26,7 +26,7 @@ mutable struct Firm
     sell_offers #   売り注文 [(価格(float), 量(float), (エージェントインデックス(integer)),,,,,]
 end
 function update_hiddenCorporateValue(firms)
-    σ_r, σ, μ = 1.0, 10.0, log(100.0)
+    σ_r, σ, μ = 0.02, 2.0, log(100.0)
     σ_p = sqrt(σ^2 + σ_r^2)
     for firm in firms
         f = firm.hiddenCorporateValue
@@ -36,7 +36,7 @@ end
 function update_estimate_corporateValue(agents, firms)
     for agent in agents
         for (i, estimated_value) in enumerate(agent.fundamentals)
-            agent.fundamentals[i] = (0.02*firms[i].hiddenCorporateValue + 0.98*estimated_value) * exp(0.01*randn())
+            agent.fundamentals[i] = (0.01*firms[i].hiddenCorporateValue + 0.99*estimated_value) * exp(0.01*randn())
         end
     end
 end
@@ -69,9 +69,9 @@ function fundamentals_trade_offer(agent, firms, j)
         marketCap = firm.marketCapitalization
         α, β = agent.params[2], agent.params[3]
         estimated_value = agent.fundamentals[i]
-        if α*estimated_value > marketCap
-            push!(buy, (α - marketCap/estimated_value, i))  #   α - marketCap/estimated_value が大きいほど買いたい
-        elseif β*estimated_value < marketCap
+        #if α*estimated_value > marketCap
+        push!(buy, (α - marketCap/estimated_value, i))  #   α - marketCap/estimated_value が大きいほど買いたい
+        if β*estimated_value < marketCap && agent.sharesQuantity[i] > 0.0
             push!(sell, (marketCap/estimated_value - β, i)) #   marketCap/estimated_value - β が大きいほど売りたい
         end
     end
@@ -83,6 +83,9 @@ function fundamentals_trade_offer(agent, firms, j)
         marketCap = firms[i].marketCapitalization
         stockQuantity = firms[i].stockQuantity
         quantity = agent.sharesQuantity[i]
+        if quantity == 0.0
+            continue
+        end
         price = (estimated_value + marketCap)/(2*stockQuantity)
         push!(firms[i].sell_offers, (price, quantity, j))
         going_to_sell_price += price * quantity
@@ -94,7 +97,9 @@ function fundamentals_trade_offer(agent, firms, j)
             flug = false
             for (i, q) in enumerate(agent.sharesQuantity)
                 if q > 0.0
-                    push!(lst, (i,q))
+                    if agent.params[3]*agent.fundamentals[i] >= firms[i].marketCapitalization   #   上で売り注文を出していない条件
+                        push!(lst, (i,q))
+                    end
                 end
             end
             shuffle(lst)
@@ -117,7 +122,7 @@ function fundamentals_trade_offer(agent, firms, j)
         going_to_buy_price += price * quantity
     end
 end
-function index_trade_offer(agent, firms, j)
+function chart_trade_offer(agent, firms, j)
     span = agent.params[2]
     if size(firms[1].stockPriceLog)[1] < span*6
         return nothing
@@ -171,8 +176,8 @@ function trade_offer(agents, firms)
     for (j, agent) in enumerate(agents)
         if agent.strategy == "fundamentals"
             fundamentals_trade_offer(agent, firms, j)
-        elseif agent.strategy == "index"
-            index_trade_offer(agent, firms, j)
+        elseif agent.strategy == "chart"
+            chart_trade_offer(agent, firms, j)
         end
     end
 end
@@ -261,7 +266,7 @@ function update_params(agents)
             if agent.params[3] < 0
                 agent.params[3] = abs(agent.params[3] % 1)
             end
-        elseif agent.strategy == "index"
+        elseif agent.strategy == "chart"
             if rand() < 0.01
                 agent.params[2] += rand(-1:1) #   タイムスケール
                 if agent.params[2] <= 0
@@ -285,6 +290,11 @@ function update_params(agents)
         end
     end
 end
+function update_marketCapitalization(firms)
+    for firm in firms
+        firm.marketCapitalization = firm.stockPrice*firm.stockQuantity
+    end
+end
 function run_one_term(agents, firms)
     update_hiddenCorporateValue(firms)
     update_estimate_corporateValue(agents, firms)
@@ -296,6 +306,7 @@ function run_one_term(agents, firms)
     update_strategy(agents)
     update_params(agents)
     update_portfolio_target(agents)
+    update_marketCapitalization(firms)
 end
 
 
@@ -303,7 +314,7 @@ N, M = 10^2, 10 #   エージェント数, 株式会社数
 init_money = 100.0*M/N
 agents = [
     Agent(
-        "index",
+        "chart",
         init_money,
         [1.0 for _ = 1:M],
         [1.0 for _ = 1:M],
