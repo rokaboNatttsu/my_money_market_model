@@ -266,6 +266,9 @@ function update_params(agents)
             if agent.params[3] < 0
                 agent.params[3] = abs(agent.params[3] % 1)
             end
+            if agent.params[2] > agent.params[3]
+                agent.params[2], agent.params[3] = agent.params[3], agent.params[2]
+            end
         elseif agent.strategy == "chart"
             if rand() < 0.01
                 agent.params[2] += rand(-1:1) #   タイムスケール
