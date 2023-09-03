@@ -9,8 +9,8 @@ mutable struct Agent
     sharesRetainedLine  #   株式保有金額のリスト
     total_assets_log    #   資産総額の履歴
     params  #   パラメータのリスト  
-    #   ファンダメンタルズ戦略をとる場合 [ポートフォリオのうち預金の割合, 企業評価/時価総額　の、買いの閾値になる倍率, 企業価値/時価総額　の、売りの閾値になる倍率, ポートフォリオ分散度合い(1以上。大きい値の時ほど分散させる)]
-    #   インデックス戦略をとる場合      [ポートフォリオのうち預金の割合, 1期のタイムスケール, α5, α4, α3, α2, α1, α0, β1, β2, γ, ポートフォリオ分散度合い(1以上。大きい値の時ほど分散させる)]
+    #   ファンダメンタルズ戦略をとる場合 [ポートフォリオに占める預金の割合の目標, 企業評価/時価総額　の、買いの閾値になる倍率, 企業価値/時価総額　の、売りの閾値になる倍率, ポートフォリオ分散度合い(1以上。大きい値の時ほど分散させる)]
+    #   インデックス戦略をとる場合      [ポートフォリオに占める預金の割合の目標, 1期のタイムスケール, α5, α4, α3, α2, α1, α0, β1, β2, γ, ポートフォリオ分散度合い(1以上。大きい値の時ほど分散させる)]
     fundamentals    #   企業評価のリスト    ファンダメンタルズ戦略をとる場合しか使わないが、更新はインデックス戦略をとるときでも続ける
     portfolio_target#   ポートフォリオ配分目標。[預金,株式]
     performance::Float64    #   運用成績
@@ -69,37 +69,36 @@ function fundamentals_trade_offer(agent, firms, j)
         marketCap = firm.marketCapitalization
         α, β = agent.params[2], agent.params[3]
         estimated_value = agent.fundamentals[i]
-        #if α*estimated_value > marketCap
-        push!(buy, (α - marketCap/estimated_value, i))  #   α - marketCap/estimated_value が大きいほど買いたい
-        if β*estimated_value < marketCap && agent.sharesQuantity[i] > 0.0
+        if α*estimated_value > marketCap
+            push!(buy, (α - marketCap/estimated_value, i))  #   α - marketCap/estimated_value が大きいほど買いたい
+        elseif β*estimated_value < marketCap && agent.sharesQuantity[i] > 0.0
             push!(sell, (marketCap/estimated_value - β, i)) #   marketCap/estimated_value - β が大きいほど売りたい
         end
     end
     sort!(buy)
     sort!(sell)
-    going_to_sell_price, going_to_buy_price = 0.0, 0.0
-    while size(sell)[1] > 0
-        x, i = pop!(sell)
-        marketCap = firms[i].marketCapitalization
-        stockQuantity = firms[i].stockQuantity
-        quantity = agent.sharesQuantity[i]
-        if quantity == 0.0
-            continue
+    going_to_sell_price, going_to_buy_price, k = 0.0, 0.0, 0
+    #   戦略的な売り。調査に労力がかかることを考慮し、１期に１銘柄しか選べないという制限をかける
+    if size(sell)[1] > 0
+        x, k = pop!(sell)
+        marketCap = firms[k].marketCapitalization
+        stockQuantity = firms[k].stockQuantity
+        quantity = agent.sharesQuantity[k]
+        if quantity > 0.0
+            price = (estimated_value + marketCap)/(2*stockQuantity)
+            push!(firms[k].sell_offers, (price, quantity, j))
+            going_to_sell_price += price * quantity
         end
-        price = (estimated_value + marketCap)/(2*stockQuantity)
-        push!(firms[i].sell_offers, (price, quantity, j))
-        going_to_sell_price += price * quantity
     end
+    #   ポートフォリオ配分を調整するための売り。際限なく売れる
     flug = true
     lst = []
     while agent.money + going_to_sell_price < agent.portfolio_target[1]
         if flug
             flug = false
             for (i, q) in enumerate(agent.sharesQuantity)
-                if q > 0.0
-                    if agent.params[3]*agent.fundamentals[i] >= firms[i].marketCapitalization   #   上で売り注文を出していない条件
-                        push!(lst, (i,q))
-                    end
+                if q > 0.0 && i != k
+                    push!(lst, (i,q))
                 end
             end
             shuffle(lst)
@@ -112,7 +111,8 @@ function fundamentals_trade_offer(agent, firms, j)
         push!(firms[i].sell_offers, (price, quantity, j))
         going_to_sell_price += price * quantity
     end
-    while agent.money + going_to_sell_price - going_to_buy_price > agent.portfolio_target[1] && size(buy)[1] > 0
+    #   戦略的な買い。調査に労力がかかることを考慮し、１期に１銘柄しか選べないという制限をかける
+    if size(buy)[1] > 0
         _, i = pop!(buy)
         marketCap = firms[i].marketCapitalization
         stockQuantity = firms[i].stockQuantity
@@ -239,7 +239,7 @@ function update_strategy(agents)
     for agent in agents
         teacher = rand(best_agents)
         if rand() < 0.05
-            new_strategy = agents[teacher].strategy
+            new_strategy = deepcopy(agents[teacher].strategy)
             agent.strategy = new_strategy
             new_params = append!([agent.params[1]], agents[teacher].params[2:end])
             agent.params = new_params
@@ -274,8 +274,6 @@ function update_params(agents)
                 end
             end
             agent.params[3:7] += 0.01*randn(5)
-            #agent.params[3:7] .-= mean(agent.params[3:7])
-            #agent.params[3:7] ./= std(agent.params[3:7])
             agent.params[8] += 0.01*randn()
             agent.params[9:10] += 0.01*randn(2)
             if agent.params[9] > agent.params[10]
@@ -319,9 +317,9 @@ agents = [
         [1.0 for _ = 1:M],
         [1.0 for _ = 1:M],
         [2.0*init_money],
-        [rand(), 1, randn(), randn(), randn(), randn(), randn(), 0.0, -0.01, 0.01, 0.5, 5],
+        [0.9, 1, randn(), randn(), randn(), randn(), randn(), 0.0, -0.01, 0.01, 0.5, 5],
         [init_money*N/M for _ = 1:M],
-        [init_money, init_money],
+        [init_money, 0.1*init_money],
         0.0,
     ) for j = 1:Int(floor(N/2))
 ]
@@ -333,9 +331,9 @@ for _ = 1:(N - Int(floor(N/2)))
             [1.0 for _ = 1:M],
             [1.0 for _ = 1:M],
             [2.0*init_money],
-            [rand(), 0.9, 1.1, 5],
+            [0.9, 0.9, 1.1, 5],
             [init_money*N/M for _ = 1:M],
-            [init_money, init_money],
+            [init_money, 0.1*init_money],
             0.0
         )
     )
