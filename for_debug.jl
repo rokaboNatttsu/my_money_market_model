@@ -13,6 +13,7 @@ mutable struct Agent
     #   インデックス戦略をとる場合      [ポートフォリオに占める預金の割合の目標, 1期のタイムスケール, α5, α4, α3, α2, α1, α0, β1, β2, γ, ポートフォリオ分散度合い(1以上。大きい値の時ほど分散させる)]
     fundamentals    #   企業評価のリスト    ファンダメンタルズ戦略をとる場合しか使わないが、更新はインデックス戦略をとるときでも続ける
     portfolio_target#   ポートフォリオ配分目標。[預金,株式]
+    purchase_cost
     performance::Float64    #   運用成績
 end
 mutable struct Firm
@@ -215,10 +216,15 @@ function trade_matching(agents, firms)
             buying_q -= trading_q
             selling_q -= trading_q
             trading_p = (pb + ps)/2
+            agents[jb].purchase_cost[i] = (agents[jb].purchase_cost[i]*agents[jb].sharesQuantity[i] + trading_p*trading_q)/(agents[jb].sharesQuantity[i] + trading_q)
             agents[jb].sharesQuantity[i] += trading_q
             agents[js].sharesQuantity[i] -= trading_q
             agents[jb].money -= trading_p*trading_q
-            agents[js].money += trading_p*trading_q
+            tax, tax_rate = 0.0, 0.2
+            if agents[js].purchase_cost[i] < trading_p
+                tax = tax_rate*trading_q*(trading_p/agents[js].purchase_cost[i] - 1)
+            end                    
+            agents[js].money += trading_p*trading_q - tax
         end
         firm.stockPrice = trading_p
         push!(firm.stockPriceLog, trading_p)
@@ -238,7 +244,7 @@ function update_strategy(agents)
     best_agents = [pop!(performance10_lst)[2] for _ = 1:A]
     for agent in agents
         teacher = rand(best_agents)
-        if rand() < 0.05
+        if rand() < 0.02 - agent.performance
             new_strategy = deepcopy(agents[teacher].strategy)
             agent.strategy = new_strategy
             new_params = append!([agent.params[1]], agents[teacher].params[2:end])
@@ -296,14 +302,33 @@ function update_marketCapitalization(firms)
         firm.marketCapitalization = firm.stockPrice*firm.stockQuantity
     end
 end
-function run_one_term(agents, firms)
+function get_income(agents, income)
+    for agent in agents
+        agent.money += income
+    end
+end
+function get_dividend(agents, firms)
+    π = 0.2
+    payout_ratio = 0.35
+    for agent in agents
+        for (i, q) in enumerate(agent.sharesQuantity)
+            if q > 0.0
+                dividend = q/firms[i].stockQuantity * π*payout_ratio*firms[i].hiddenCorporateValue
+                agent.money += dividend
+            end
+        end
+    end
+end
+function run_one_term(agents, firms, income)
     update_hiddenCorporateValue(firms)
     update_estimate_corporateValue(agents, firms)
     trade_offer(agents, firms)
     trade_matching(agents, firms)
+    get_dividend(agents, firms)
     cal_sharesRetainedLine(agents, firms)
     cal_total_asset(agents)
     cal_performance(agents)
+    get_income(agents, income)
     update_strategy(agents)
     update_params(agents)
     update_portfolio_target(agents)
@@ -323,6 +348,7 @@ agents = [
         [0.9, 1, randn(), randn(), randn(), randn(), randn(), 0.0, -0.01, 0.01, 0.5, 5],
         [init_money*N/M for _ = 1:M],
         [init_money, 0.1*init_money],
+        [1.0 for _ = 1:M],
         0.0,
     ) for j = 1:Int(floor(N/2))
 ]
@@ -337,6 +363,7 @@ for _ = 1:(N - Int(floor(N/2)))
             [0.9, 0.9, 1.1, 5],
             [init_money*N/M for _ = 1:M],
             [init_money, 0.1*init_money],
+            [1.0 for _ = 1:M],
             0.0
         )
     )
@@ -355,5 +382,6 @@ firms = [
 ]
 
 for t = 1:1000
-    run_one_term(agents, firms)
+    income = 0.1*init_money
+    run_one_term(agents, firms, income)
 end
