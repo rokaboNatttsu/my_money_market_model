@@ -65,37 +65,34 @@ function cal_sharesRetainedLine(agents, firms)
 end
 function fundamentals_trade_offer(agent, firms, j)
     lst = []
-    marketCap, mean_amp = 0.0, 0.0
+    marketCap, mean_ln_amp, fundamentals_sum = 0.0, 0.0, 0.0
     for (i, firm) in enumerate(firms)
         marketCap = firm.marketCapitalization
         fundamentals = agent.fundamentals[i]
         push!(lst, (marketCap/fundamentals, i))    #   marketCap/fundamentalsが小さいほど買いたい、大きいほど売りたい
-        mean_amp += marketCap/fundamentals
+        mean_ln_amp += log(marketCap/fundamentals)
+        fundamentals_sum += fundamentals
     end
-    mean_amp /= size(firms)[1]
+    mean_ln_amp /= size(firms)[1]
     sort!(lst)
     sell, buy = [], []
     #   全部売り候補に入れて、ポートフォリオ配分目標に至るまで買い候補に入れて、その差額を本チャンの売買リストに加える
     #   すべて仮売り。
     for (i,q) in enumerate(agent.sharesQuantity)
         if q > 0.0
-            p = firms[i].stockPrice
+            p = min(firms[i].stockPrice, exp(mean_ln_amp)*agent.fundamentals[i])
             push!(sell, (i, p, q))
         end
     end
     #   仮買い。
-    allocations_lst, fundamentals_sum = [0.0 for _ = 1:size(firms)[1]], 0.0
-    for k in 1:min(Integer(agent.params[end]), size(firms)[1])
-        _, i = lst[k]
-        fundamentals_sum += agent.fundamentals[i]
-    end
+    allocations_lst = [0.0 for _ = 1:size(firms)[1]]
     for k in 1:min(Integer(agent.params[end]), size(firms)[1])
         _, i = lst[k]
         allocations_lst[i] = agent.portfolio_target[2]*agent.fundamentals[i]/fundamentals_sum
     end
     for k in 1:min(Integer(agent.params[end]), size(firms)[1])
         _, i = lst[k]
-        p = (mean_amp*agent.fundamentals[i] + firms[i].marketCapitalization)/(2*firms[i].stockQuantity)
+        p = (exp(mean_ln_amp)*agent.fundamentals[i] + firms[i].marketCapitalization)/(2*firms[i].stockQuantity)
         q = allocations_lst[i]/p
         push!(buy, (i, p, q))
     end
@@ -162,10 +159,10 @@ function chart_trade_offer(agent, firms, j)
     while agent.money + going_to_sell_price - going_to_buy_price < agent.portfolio_target[1] && size(sell)[1] > 0
         p, i = pop!(sell)
         price = (1+p)*firms[i].stockPrice
-        if price <= 0
+        quantity = agent.sharesQuantity[i]
+        if price <= 0.0 || quantity == 0.0
             continue
         end
-        quantity = agent.sharesQuantity[i]
         going_to_buy_price += price*quantity
         push!(firms[i].sell_offers, (price, quantity, j))
     end
