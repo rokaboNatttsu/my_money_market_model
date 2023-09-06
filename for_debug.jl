@@ -64,63 +64,63 @@ function cal_sharesRetainedLine(agents, firms)
     end
 end
 function fundamentals_trade_offer(agent, firms, j)
-    buy, sell = [], []
-    marketCap, estimated_value, α, β = 0.0, 0.0, 0.0, 0.0
+    lst = []
+    marketCap, mean_amp = 0.0, 0.0
     for (i, firm) in enumerate(firms)
         marketCap = firm.marketCapitalization
-        α, β = agent.params[2], agent.params[3]
-        estimated_value = agent.fundamentals[i]
-        if α*estimated_value > marketCap
-            push!(buy, (α - marketCap/estimated_value, i))  #   α - marketCap/estimated_value が大きいほど買いたい
-        elseif β*estimated_value < marketCap && agent.sharesQuantity[i] > 0.0
-            push!(sell, (marketCap/estimated_value - β, i)) #   marketCap/estimated_value - β が大きいほど売りたい
+        fundamentals = agent.fundamentals[i]
+        push!(lst, (marketCap/fundamentals, i))    #   marketCap/fundamentalsが小さいほど買いたい、大きいほど売りたい
+        mean_amp += marketCap/fundamentals
+    end
+    mean_amp /= size(firms)[1]
+    sort!(lst)
+    sell, buy = [], []
+    #   全部売り候補に入れて、ポートフォリオ配分目標に至るまで買い候補に入れて、その差額を本チャンの売買リストに加える
+    #   すべて仮売り。
+    for (i,q) in enumerate(agent.sharesQuantity)
+        if q > 0.0
+            p = firms[i].stockPrice
+            push!(sell, (i, p, q))
         end
     end
-    sort!(buy)
-    sort!(sell)
-    going_to_sell_price, going_to_buy_price, k = 0.0, 0.0, 0
-    #   戦略的な売り。調査に労力がかかることを考慮し、１期に１銘柄しか選べないという制限をかける
-    if size(sell)[1] > 0
-        x, k = pop!(sell)
-        marketCap = firms[k].marketCapitalization
-        stockQuantity = firms[k].stockQuantity
-        quantity = agent.sharesQuantity[k]
-        if quantity > 0.0
-            price = (estimated_value + marketCap)/(2*stockQuantity)
-            push!(firms[k].sell_offers, (price, quantity, j))
-            going_to_sell_price += price * quantity
-        end
+    #   仮買い。
+    allocations_lst, fundamentals_sum = [0.0 for _ = 1:size(firms)[1]], 0.0
+    for k in 1:min(Integer(agent.params[end]), size(firms)[1])
+        _, i = lst[k]
+        fundamentals_sum += agent.fundamentals[i]
     end
-    #   ポートフォリオ配分を調整するための売り。際限なく売れる
-    flug = true
-    lst = []
-    while agent.money + going_to_sell_price < agent.portfolio_target[1]
-        if flug
-            flug = false
-            for (i, q) in enumerate(agent.sharesQuantity)
-                if q > 0.0 && i != k
-                    push!(lst, (i,q))
+    for k in 1:min(Integer(agent.params[end]), size(firms)[1])
+        _, i = lst[k]
+        allocations_lst[i] = agent.portfolio_target[2]*agent.fundamentals[i]/fundamentals_sum
+    end
+    for k in 1:min(Integer(agent.params[end]), size(firms)[1])
+        _, i = lst[k]
+        p = (mean_amp*agent.fundamentals[i] + firms[i].marketCapitalization)/(2*firms[i].stockQuantity)
+        q = allocations_lst[i]/p
+        push!(buy, (i, p, q))
+    end
+    #   注文の決定
+    going_to_buy_price = 0.0
+    for (ib, pb, qb) in sell
+        q, p = qb, pb
+        for (is, ps, qs) in buy
+            if ib == is
+                q -= qs
+                if q < 0.0
+                    p = ps
                 end
+                break
             end
-            shuffle(lst)
         end
-        if size(lst)[1] == 0
-            break
+        if q > 0
+            push!(firms[ib].sell_offers, (p, q, j))
+        elseif q < 0
+            going_to_buy_price += p*(-q)
+            if going_to_buy_price > agent.money
+                continue
+            end
+            push!(firms[ib].buy_offers, (p, -q, j))
         end
-        i, quantity = pop!(lst)
-        price = firms[i].stockPrice
-        push!(firms[i].sell_offers, (price, quantity, j))
-        going_to_sell_price += price * quantity
-    end
-    #   戦略的な買い。調査に労力がかかることを考慮し、１期に１銘柄しか選べないという制限をかける
-    if size(buy)[1] > 0
-        _, i = pop!(buy)
-        marketCap = firms[i].marketCapitalization
-        stockQuantity = firms[i].stockQuantity
-        price = (estimated_value + marketCap)/(2*stockQuantity)
-        quantity = 1/agent.params[end]*agent.money/price
-        push!(firms[i].buy_offers, (price, quantity, j))
-        going_to_buy_price += price * quantity
     end
 end
 function chart_trade_offer(agent, firms, j)
@@ -136,13 +136,13 @@ function chart_trade_offer(agent, firms, j)
         x1, x2, x3, x4, x5, x6 = firm.stockPriceLog[end-5:end]
         p = sum([α0 + α1*(x2-x1)/x1, α2*(x3-x2)/x2, α3*(x4-x3)/x3, α4*(x5-x4)/x4, α5*(x6-x5)/x5])
         if p < β1
-            push!(sell, (-p,i))
+            push!(sell, (p,i))
         elseif p > β2
             push!(buy, (p,i))
         end
     end
     sort!(buy)
-    sort!(sell)
+    sort!(sell, rev=true)
     going_to_buy_price, going_to_sell_price = 0, 0
     γ = agent.params[11]    #   総資産に占める目標取引量の割合
     γ2 = (1 - γ/2)*agent.total_assets_log[end]
@@ -154,14 +154,14 @@ function chart_trade_offer(agent, firms, j)
         end
         quantity = 1/agent.params[end]*agent.money/price
         going_to_buy_price += price*quantity
-        if going_to_buy_price > agent.money
+        if agent.money - going_to_buy_price < 0.5*agent.portfolio_target[1]
             break
         end
         push!(firms[i].buy_offers, (price, quantity, j))
     end
     while agent.money + going_to_sell_price - going_to_buy_price < agent.portfolio_target[1] && size(sell)[1] > 0
         p, i = pop!(sell)
-        price = (1-p)*firms[i].stockPrice
+        price = (1+p)*firms[i].stockPrice
         if price <= 0
             continue
         end
@@ -182,9 +182,9 @@ function trade_offer(agents, firms)
         end
     end
 end
-function cal_performance(agents)
+function cal_performance(agents, income)
     for agent in agents
-        agent.performance = (agent.total_assets_log[end] - agent.total_assets_log[end-1])/agent.total_assets_log[end-1]
+        agent.performance = (agent.total_assets_log[end] - agent.total_assets_log[end-1] - income)/agent.total_assets_log[end-1]
     end
 end
 function trade_matching(agents, firms)
@@ -222,8 +222,8 @@ function trade_matching(agents, firms)
             agents[jb].money -= trading_p*trading_q
             tax, tax_rate = 0.0, 0.2
             if agents[js].purchase_cost[i] < trading_p
-                tax = tax_rate*trading_q*(trading_p/agents[js].purchase_cost[i] - 1)
-            end                    
+                tax = tax_rate*trading_q*(trading_p - agents[js].purchase_cost[i])
+            end
             agents[js].money += trading_p*trading_q - tax
         end
         firm.stockPrice = trading_p
@@ -234,17 +234,10 @@ function update_strategy(agents)
     if size(agents[1].total_assets_log)[1] < 10
         return nothing
     end
-    performance10_lst = []
-    for (j, agent) in enumerate(agents)
-        performance10 = (agent.total_assets_log[end] - agent.total_assets_log[end-9])/agent.total_assets_log[end-9]
-        push!(performance10_lst, (performance10, j))
-    end
-    sort!(performance10_lst)
-    A = Int(floor(size(agents)[1]/10))
-    best_agents = [pop!(performance10_lst)[2] for _ = 1:A]
+    A = Integer(size(agents)[1])
     for agent in agents
-        teacher = rand(best_agents)
-        if rand() < 0.02 - agent.performance
+        teacher = rand(1:A)
+        if rand() < 0.01 - 0.1*agent.performance
             new_strategy = deepcopy(agents[teacher].strategy)
             agent.strategy = new_strategy
             new_params = append!([agent.params[1]], agents[teacher].params[2:end])
@@ -263,19 +256,7 @@ function update_params(agents)
         if agent.params[end] <= 0
             agent.params[end] = 1
         end
-        if agent.strategy == "fundamentals"
-            agent.params[2] += 0.01*randn()
-            agent.params[3] += 0.01*randn()
-            if agent.params[2] < 0
-                agent.params[2] = abs(agent.params[2] % 1)
-            end
-            if agent.params[3] < 0
-                agent.params[3] = abs(agent.params[3] % 1)
-            end
-            if agent.params[2] > agent.params[3]
-                agent.params[2], agent.params[3] = agent.params[3], agent.params[2]
-            end
-        elseif agent.strategy == "chart"
+        if agent.strategy == "chart"
             if rand() < 0.01
                 agent.params[2] += rand(-1:1) #   タイムスケール
                 if agent.params[2] <= 0
@@ -283,6 +264,7 @@ function update_params(agents)
                 end
             end
             agent.params[3:7] += 0.01*randn(5)
+            agent.params[3:7] = (agent.params[3:7] .- sum(agent.params[3:7])/5)/std(agent.params[3:7])
             agent.params[8] += 0.01*randn()
             agent.params[9:10] += 0.01*randn(2)
             if agent.params[9] > agent.params[10]
@@ -327,7 +309,7 @@ function run_one_term(agents, firms, income)
     get_dividend(agents, firms)
     cal_sharesRetainedLine(agents, firms)
     cal_total_asset(agents)
-    cal_performance(agents)
+    cal_performance(agents, income)
     get_income(agents, income)
     update_strategy(agents)
     update_params(agents)
@@ -337,14 +319,15 @@ end
 
 
 N, M = 10^2, 10 #   エージェント数, 株式会社数
-init_money = 100.0*M/N
+init_stock_quantity, init_stock_price = 100.0, 1.0
+init_money = init_stock_quantity*init_stock_price*M/N * 9.0
 agents = [
     Agent(
         "chart",
         init_money,
-        [1.0 for _ = 1:M],
-        [1.0 for _ = 1:M],
-        [2.0*init_money],
+        [init_stock_quantity/N for _ = 1:M],
+        [init_stock_quantity*init_stock_price/N for _ = 1:M],
+        [init_money/0.9],
         [0.9, 1, randn(), randn(), randn(), randn(), randn(), 0.0, -0.01, 0.01, 0.5, 5],
         [init_money*N/M for _ = 1:M],
         [init_money, 0.1*init_money],
@@ -357,10 +340,10 @@ for _ = 1:(N - Int(floor(N/2)))
         Agent(
             "fundamentals",
             init_money,
-            [1.0 for _ = 1:M],
-            [1.0 for _ = 1:M],
-            [2.0*init_money],
-            [0.9, 0.9, 1.1, 5],
+            [init_stock_quantity/N for _ = 1:M],
+            [init_stock_quantity*init_stock_price/N for _ = 1:M],
+            [init_money/0.9],
+            [0.9, 5],
             [init_money*N/M for _ = 1:M],
             [init_money, 0.1*init_money],
             [1.0 for _ = 1:M],
@@ -370,18 +353,18 @@ for _ = 1:(N - Int(floor(N/2)))
 end
 firms = [
     Firm(
-        1.0,
-        100.0,
-        [1.0],
-        [100.0],
-        100.0,
-        100.0,
+        init_stock_price,
+        init_stock_quantity,
+        [init_stock_price],
+        [init_stock_quantity],
+        init_stock_price*init_stock_quantity,
+        init_stock_price*init_stock_quantity,
         [],
         [],
     ) for _ = 1:M
 ]
 
 for t = 1:1000
-    income = 0.1*init_money
+    income = 0.01*init_money
     run_one_term(agents, firms, income)
 end
