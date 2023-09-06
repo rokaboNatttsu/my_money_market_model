@@ -37,7 +37,7 @@ end
 function update_estimate_corporateValue(agents, firms)
     for agent in agents
         for (i, estimated_value) in enumerate(agent.fundamentals)
-            agent.fundamentals[i] = (0.01*firms[i].hiddenCorporateValue + 0.99*estimated_value) * exp(0.01*randn())
+            agent.fundamentals[i] = (0.98*firms[i].hiddenCorporateValue + 0.02*estimated_value) * exp(0.01*randn())
         end
     end
 end
@@ -80,7 +80,7 @@ function fundamentals_trade_offer(agent, firms, j)
     #   すべて仮売り。
     for (i,q) in enumerate(agent.sharesQuantity)
         if q > 0.0
-            p = min(firms[i].stockPrice, exp(mean_ln_amp)*agent.fundamentals[i])
+            p = min(firms[i].stockPrice, (0.2*exp(mean_ln_amp)*agent.fundamentals[i] + 0.8*firms[i].marketCapitalization)/(firms[i].stockQuantity))
             push!(sell, (i, p, q))
         end
     end
@@ -92,7 +92,7 @@ function fundamentals_trade_offer(agent, firms, j)
     end
     for k in 1:min(Integer(agent.params[end]), size(firms)[1])
         _, i = lst[k]
-        p = (exp(mean_ln_amp)*agent.fundamentals[i] + firms[i].marketCapitalization)/(2*firms[i].stockQuantity)
+        p = (0.2*exp(mean_ln_amp)*agent.fundamentals[i] + 0.8*firms[i].marketCapitalization)/(firms[i].stockQuantity)
         q = allocations_lst[i]/p
         push!(buy, (i, p, q))
     end
@@ -234,7 +234,8 @@ function update_strategy(agents)
     A = Integer(size(agents)[1])
     for agent in agents
         teacher = rand(1:A)
-        if rand() < 0.01 - 0.1*agent.performance
+        t0, t1 = agent.total_assets_log[end-9], agent.total_assets_log[end]
+        if rand() < 0.01 - 0.01*(t1 - t0)/t0
             new_strategy = deepcopy(agents[teacher].strategy)
             agent.strategy = new_strategy
             new_params = append!([agent.params[1]], agents[teacher].params[2:end])
@@ -287,12 +288,12 @@ function get_income(agents, income)
     end
 end
 function get_dividend(agents, firms)
-    π = 0.2
+    Π = 0.2
     payout_ratio = 0.35
     for agent in agents
         for (i, q) in enumerate(agent.sharesQuantity)
             if q > 0.0
-                dividend = q/firms[i].stockQuantity * π*payout_ratio*firms[i].hiddenCorporateValue
+                dividend = q/firms[i].stockQuantity * Π*payout_ratio*firms[i].hiddenCorporateValue
                 agent.money += dividend
             end
         end
