@@ -26,8 +26,8 @@ mutable struct Firm
     buy_offers  #   買い注文 [(価格(float), 量(float), (エージェントインデックス(integer)),,,,,]
     sell_offers #   売り注文 [(価格(float), 量(float), (エージェントインデックス(integer)),,,,,]
 end
-function update_hiddenCorporateValue(firms)
-    σ_r, σ, μ = 0.02, 2.0, log(100.0)
+function update_hiddenCorporateValue(firms, ft)
+    σ_r, σ, μ = 0.02, 2.0, log(100.0*ft)
     σ_p = sqrt(σ^2 + σ_r^2)
     for firm in firms
         f = firm.hiddenCorporateValue
@@ -37,7 +37,7 @@ end
 function update_estimate_corporateValue(agents, firms)
     for agent in agents
         for (i, estimated_value) in enumerate(agent.fundamentals)
-            agent.fundamentals[i] = (0.98*firms[i].hiddenCorporateValue + 0.02*estimated_value) * exp(0.01*randn())
+            agent.fundamentals[i] = (0.02*firms[i].hiddenCorporateValue + 0.98*estimated_value) * exp(0.1*randn())
         end
     end
 end
@@ -262,7 +262,7 @@ function update_params(agents)
                 end
             end
             agent.params[3:7] += 0.01*randn(5)
-            agent.params[3:7] = (agent.params[3:7] .- sum(agent.params[3:7])/5)/std(agent.params[3:7])
+            agent.params[3:7] = (agent.params[3:7] .- sum(agent.params[3:7])/5)/(std(agent.params[3:7])*sqrt(5))
             agent.params[8] += 0.01*randn()
             agent.params[9:10] += 0.01*randn(2)
             if agent.params[9] > agent.params[10]
@@ -299,8 +299,8 @@ function get_dividend(agents, firms)
         end
     end
 end
-function run_one_term(agents, firms, income)
-    update_hiddenCorporateValue(firms)
+function run_one_term(agents, firms, income, ft)
+    update_hiddenCorporateValue(firms, ft)
     update_estimate_corporateValue(agents, firms)
     trade_offer(agents, firms)
     trade_matching(agents, firms)
@@ -313,6 +313,9 @@ function run_one_term(agents, firms, income)
     update_params(agents)
     update_portfolio_target(agents)
     update_marketCapitalization(firms)
+end
+function f(t)
+    return 2^(0.01*t)
 end
 
 
@@ -362,7 +365,13 @@ firms = [
     ) for _ = 1:M
 ]
 
-for t = 1:1000
-    income = 0.01*init_money
-    run_one_term(agents, firms, income)
+
+
+T = 10^3
+income_lst = [0.0002*init_money*f(t) for t = 1:T] 
+#   income=constantだと、金融市場の規模が継続的に大きく（小さく）ならないためか、
+#   適応の結果ポートフォリオ配分目標に占める預金の割合がとても大きくなる。そして売買が減り、値動きが激減する
+for t = 1:T
+    income = income_lst[t]
+    run_one_term(agents, firms, income, f(t))
 end
