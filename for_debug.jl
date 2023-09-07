@@ -2,6 +2,8 @@ using StatsPlots
 using Random
 using Statistics
 
+
+
 mutable struct Agent
     strategy::String
     money::Float64
@@ -22,7 +24,7 @@ mutable struct Firm
     stockPriceLog   #   価格の記録
     stockQuantityLog    #   発行部数の記録
     marketCapitalization::Float64   #   時価総額
-    hiddenCorporateValue::Float64   #   企業規模
+    hiddenCorporateValue::Float64   #   企業価値
     buy_offers  #   買い注文 [(価格(float), 量(float), (エージェントインデックス(integer)),,,,,]
     sell_offers #   売り注文 [(価格(float), 量(float), (エージェントインデックス(integer)),,,,,]
 end
@@ -131,40 +133,57 @@ function chart_trade_offer(agent, firms, j)
     sell, buy = [], []
     for (i, firm) in enumerate(firms)
         x1, x2, x3, x4, x5, x6 = firm.stockPriceLog[end-5:end]
-        p = sum([α0 + α1*(x2-x1)/x1, α2*(x3-x2)/x2, α3*(x4-x3)/x3, α4*(x5-x4)/x4, α5*(x6-x5)/x5])
-        if p < β1
-            push!(sell, (p,i))
-        elseif p > β2
+        p = α0 + α1*(x2-x1)/x1 + α2*(x3-x2)/x2 + α3*(x4-x3)/x3 + α4*(x5-x4)/x4 + α5*(x6-x5)/x5
+        if p > β2
             push!(buy, (p,i))
         end
     end
-    sort!(buy)
-    sort!(sell, rev=true)
-    going_to_buy_price, going_to_sell_price = 0, 0
-    γ = agent.params[11]    #   総資産に占める目標取引量の割合
-    γ2 = (1 - γ/2)*agent.total_assets_log[end]
-    while γ2 > going_to_buy_price && size(buy)[1] > 0
-        p, i = pop!(buy)
-        price = (1+p)*firms[i].stockPrice
-        if price <= 0
+    for (i, q) in enumerate(agent.sharesQuantity)
+        if q == 0.0
             continue
         end
-        quantity = 1/agent.params[end]*agent.money/price
-        going_to_buy_price += price*quantity
-        if agent.money - going_to_buy_price < 0.5*agent.portfolio_target[1]
-            break
+        x1, x2, x3, x4, x5, x6 = firms[i].stockPriceLog[end-5:end]
+        p = α0 + α1*(x2-x1)/x1 + α2*(x3-x2)/x2 + α3*(x4-x3)/x3 + α4*(x5-x4)/x4 + α5*(x6-x5)/x5
+        if p < β1
+            push!(sell, (p,i))
         end
-        push!(firms[i].buy_offers, (price, quantity, j))
     end
-    while agent.money + going_to_sell_price - going_to_buy_price < agent.portfolio_target[1] && size(sell)[1] > 0
-        p, i = pop!(sell)
+    #   売り
+    going_to_sell_price = 0.0
+    for (p, i) in sell
         price = (1+p)*firms[i].stockPrice
         quantity = agent.sharesQuantity[i]
         if price <= 0.0 || quantity == 0.0
             continue
         end
-        going_to_buy_price += price*quantity
+        going_to_sell_price += price * quantity
         push!(firms[i].sell_offers, (price, quantity, j))
+    end
+    #   買い
+    sort!(buy)
+    if size(buy)[1] > Integer(agent.params[end])
+        buy = buy[end-Integer(agent.params[end])+1:end]
+    end
+    marketCap_sum = 0
+    for (_, i) in buy
+        marketCap_sum += firms[i].marketCapitalization
+    end
+    allocations_lst = [0.0 for _ = 1:size(firms)[1]]
+    buy_target = max(0.0, agent.money + going_to_sell_price - agent.portfolio_target[1])
+    if buy_target == 0.0
+        return nothing
+    end
+    for k in 1:min(Integer(agent.params[end]), size(buy)[1])
+        _, i = buy[k]
+        allocations_lst[i] = buy_target*firms[i].marketCapitalization/marketCap_sum
+    end
+    for (p, i) in buy
+        price = (1+p)*firms[i].stockPrice
+        if price <= 0.0
+            continue
+        end
+        quantity = allocations_lst[i]/price
+        push!(firms[i].buy_offers, (price, quantity, j))
     end
 end
 function trade_offer(agents, firms)
