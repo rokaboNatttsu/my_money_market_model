@@ -3,7 +3,6 @@ using Random
 using Statistics
 
 
-
 mutable struct Agent
     strategy::String
     money::Float64
@@ -28,8 +27,8 @@ mutable struct Firm
     buy_offers  #   買い注文 [(価格(float), 量(float), (エージェントインデックス(integer)),,,,,]
     sell_offers #   売り注文 [(価格(float), 量(float), (エージェントインデックス(integer)),,,,,]
 end
-function update_hiddenCorporateValue(firms, ft)
-    σ_r, σ, μ = 0.02, 2.0, log(100.0*ft)
+function update_hiddenCorporateValue(firms)
+    σ_r, σ, μ = 0.05, 2.0, log(100.0)
     σ_p = sqrt(σ^2 + σ_r^2)
     for firm in firms
         f = firm.hiddenCorporateValue
@@ -39,7 +38,7 @@ end
 function update_estimate_corporateValue(agents, firms)
     for agent in agents
         for (i, estimated_value) in enumerate(agent.fundamentals)
-            agent.fundamentals[i] = (0.02*firms[i].hiddenCorporateValue + 0.98*estimated_value) * exp(0.1*randn())
+            agent.fundamentals[i] = (0.05*firms[i].hiddenCorporateValue + 0.95*estimated_value) * exp(0.1*randn())
         end
     end
 end
@@ -65,36 +64,54 @@ function cal_sharesRetainedLine(agents, firms)
         end
     end
 end
-function fundamentals_trade_offer(agent, firms, j)
+function fundamentals_trade_offer(agent, firms, j, all_marketCap_sum)
     lst = []
-    marketCap, mean_ln_amp, fundamentals_sum = 0.0, 0.0, 0.0
+    marketCap, mean_log10e_amp, fundamentals_sum = 0.0, 0.0, 0.0
     for (i, firm) in enumerate(firms)
         marketCap = firm.marketCapitalization
         fundamentals = agent.fundamentals[i]
         push!(lst, (marketCap/fundamentals, i))    #   marketCap/fundamentalsが小さいほど買いたい、大きいほど売りたい
-        mean_ln_amp += log(marketCap/fundamentals)
+        mean_log10e_amp += log(50ℯ ,marketCap/fundamentals)    #   底をℯにすると、mean_log10e_ampが乱高下する。底が大きいものを採用した。
         fundamentals_sum += fundamentals
     end
-    mean_ln_amp /= size(firms)[1]
-    sort!(lst)
+    mean_log10e_amp /= size(firms)[1]
     sell, buy = [], []
     #   全部売り候補に入れて、ポートフォリオ配分目標に至るまで買い候補に入れて、その差額を本チャンの売買リストに加える
     #   すべて仮売り。
+    marketCap_sum = 0.0
     for (i,q) in enumerate(agent.sharesQuantity)
         if q > 0.0
-            p = min(firms[i].stockPrice, (0.2*exp(mean_ln_amp)*agent.fundamentals[i] + 0.8*firms[i].marketCapitalization)/(firms[i].stockQuantity))
-            push!(sell, (i, p, q))
+            marketCap_sum = firms[i].marketCapitalization
+        end
+    end
+    for (i,q) in enumerate(agent.sharesQuantity)
+        if q > 0.0
+            if rand() < sqrt(firms[i].marketCapitalization/marketCap_sum)
+                p = min(firms[i].stockPrice, (0.2*exp(mean_log10e_amp)*agent.fundamentals[i]/firms[i].stockQuantity + 0.8*firms[i].stockPrice))
+                push!(sell, (i, p, q))
+            end
         end
     end
     #   仮買い。
+    sort!(lst)
     allocations_lst = [0.0 for _ = 1:size(firms)[1]]
-    for k in 1:min(Integer(agent.params[end]), size(firms)[1])
+    counter = 0
+    for k in 1:size(lst)[1]
         _, i = lst[k]
-        allocations_lst[i] = agent.portfolio_target[2]*agent.fundamentals[i]/fundamentals_sum
+        if rand() < sqrt(firms[i].marketCapitalization/all_marketCap_sum)   #   規模の大きい企業ほど売買の対象になりやすいようにする
+            allocations_lst[i] = agent.portfolio_target[2]*agent.fundamentals[i]/fundamentals_sum
+            counter += 1
+            if counter == Integer(agent.params[end])
+                break
+            end
+        end
     end
-    for k in 1:min(Integer(agent.params[end]), size(firms)[1])
+    for k in 1:size(lst)[1]
         _, i = lst[k]
-        p = (0.2*exp(mean_ln_amp)*agent.fundamentals[i] + 0.8*firms[i].marketCapitalization)/(firms[i].stockQuantity)
+        if allocations_lst[i] == 0.0
+            continue
+        end
+        p = (0.2*exp(mean_log10e_amp)*agent.fundamentals[i] + 0.8*firms[i].marketCapitalization)/(firms[i].stockQuantity)
         q = allocations_lst[i]/p
         push!(buy, (i, p, q))
     end
@@ -122,7 +139,7 @@ function fundamentals_trade_offer(agent, firms, j)
         end
     end
 end
-function chart_trade_offer(agent, firms, j)
+function chart_trade_offer(agent, firms, j, all_marketCap_sum)
     span = agent.params[2]
     if size(firms[1].stockPriceLog)[1] < span*6
         return nothing
@@ -131,13 +148,7 @@ function chart_trade_offer(agent, firms, j)
     α0 = agent.params[8]
     β1, β2 = agent.params[9:10]                #   β1<β2 の条件を追加する
     sell, buy = [], []
-    for (i, firm) in enumerate(firms)
-        x1, x2, x3, x4, x5, x6 = firm.stockPriceLog[end-5:end]
-        p = α0 + α1*(x2-x1)/x1 + α2*(x3-x2)/x2 + α3*(x4-x3)/x3 + α4*(x5-x4)/x4 + α5*(x6-x5)/x5
-        if p > β2
-            push!(buy, (p,i))
-        end
-    end
+    #   売り
     for (i, q) in enumerate(agent.sharesQuantity)
         if q == 0.0
             continue
@@ -148,33 +159,57 @@ function chart_trade_offer(agent, firms, j)
             push!(sell, (p,i))
         end
     end
-    #   売り
-    going_to_sell_price = 0.0
+    marketCap_sum = 0.0
+    sell_2 = []
     for (p, i) in sell
+        if agent.money < 0.0
+            p = 0.0
+        end
         price = (1+p)*firms[i].stockPrice
         quantity = agent.sharesQuantity[i]
         if price <= 0.0 || quantity == 0.0
             continue
+        else
+            push!(sell_2, (p, i))
         end
-        going_to_sell_price += price * quantity
-        push!(firms[i].sell_offers, (price, quantity, j))
+        marketCap_sum += firms[i].marketCapitalization
+    end
+    going_to_sell_price = 0.0
+    for (p, i) in sell_2
+        if agent.money < 0.0
+            p = 0.0
+        end
+        price = (1+p)*firms[i].stockPrice
+        quantity = agent.sharesQuantity[i]
+        if rand() < sqrt(firms[i].marketCapitalization/marketCap_sum)
+            going_to_sell_price += price * quantity
+            push!(firms[i].sell_offers, (price, quantity, j))
+        end
     end
     #   買い
+    for (i, firm) in enumerate(firms)
+        x1, x2, x3, x4, x5, x6 = firm.stockPriceLog[end-5:end]
+        p = α0 + α1*(x2-x1)/x1 + α2*(x3-x2)/x2 + α3*(x4-x3)/x3 + α4*(x5-x4)/x4 + α5*(x6-x5)/x5
+        if p > β2
+            if rand() < sqrt(firm.marketCapitalization/all_marketCap_sum)
+                push!(buy, (p,i))
+            end
+        end
+    end
     sort!(buy)
     if size(buy)[1] > Integer(agent.params[end])
         buy = buy[end-Integer(agent.params[end])+1:end]
     end
-    marketCap_sum = 0
+    marketCap_sum = 0.0
     for (_, i) in buy
         marketCap_sum += firms[i].marketCapitalization
     end
     allocations_lst = [0.0 for _ = 1:size(firms)[1]]
-    buy_target = max(0.0, agent.money + going_to_sell_price - agent.portfolio_target[1])
-    if buy_target == 0.0
+    buy_target = agent.money + going_to_sell_price - agent.portfolio_target[1]
+    if buy_target <= 0.0
         return nothing
     end
-    for k in 1:min(Integer(agent.params[end]), size(buy)[1])
-        _, i = buy[k]
+    for (_, i) in buy
         allocations_lst[i] = buy_target*firms[i].marketCapitalization/marketCap_sum
     end
     for (p, i) in buy
@@ -186,15 +221,15 @@ function chart_trade_offer(agent, firms, j)
         push!(firms[i].buy_offers, (price, quantity, j))
     end
 end
-function trade_offer(agents, firms)
+function trade_offer(agents, firms, all_marketCap_sum)
     for firm in firms
         firm.buy_offers, firm.sell_offers = [], []
     end
     for (j, agent) in enumerate(agents)
         if agent.strategy == "fundamentals"
-            fundamentals_trade_offer(agent, firms, j)
+            fundamentals_trade_offer(agent, firms, j, all_marketCap_sum)
         elseif agent.strategy == "chart"
-            chart_trade_offer(agent, firms, j)
+            chart_trade_offer(agent, firms, j, all_marketCap_sum)
         end
     end
 end
@@ -318,10 +353,18 @@ function get_dividend(agents, firms)
         end
     end
 end
-function run_one_term(agents, firms, income, ft)
-    update_hiddenCorporateValue(firms, ft)
+function cal_all_marketCap_sum(firms)
+    all_marketCap_sum = 0.0
+    for firm in firms
+        all_marketCap_sum += firm.marketCapitalization
+    end
+    return all_marketCap_sum
+end
+function run_one_term(agents, firms, income)
+    all_marketCap_sum = cal_all_marketCap_sum(firms)
+    update_hiddenCorporateValue(firms)
     update_estimate_corporateValue(agents, firms)
-    trade_offer(agents, firms)
+    trade_offer(agents, firms, all_marketCap_sum)
     trade_matching(agents, firms)
     get_dividend(agents, firms)
     cal_sharesRetainedLine(agents, firms)
@@ -338,9 +381,12 @@ function f(t)
 end
 
 
-N, M = 10^2, 10 #   エージェント数, 株式会社数
+
+
+N, M = 10^3, 10^1 #   エージェント数, 株式会社数
 init_stock_quantity, init_stock_price = 100.0, 1.0
 init_money = init_stock_quantity*init_stock_price*M/N * 9.0
+
 agents = [
     Agent(
         "chart",
@@ -371,6 +417,15 @@ for _ = 1:(N - Int(floor(N/2)))
         )
     )
 end
+
+σ_r, σ, μ = 0.2, 2.0, log(100.0)
+σ_p = sqrt(σ^2 + σ_r^2)
+x = [μ for _ = 1:M]
+for t = 1:10^3
+    for i = 1:M
+        x[i] = exp((log(x[i]) + σ_r*randn())*σ/σ_p + μ*(1 - σ/σ_p))
+    end
+end
 firms = [
     Firm(
         init_stock_price,
@@ -378,10 +433,10 @@ firms = [
         [init_stock_price],
         [init_stock_quantity],
         init_stock_price*init_stock_quantity,
-        init_stock_price*init_stock_quantity,
+        x[i],   #   元init_stock_price*init_stock_quantity
         [],
         [],
-    ) for _ = 1:M
+    ) for i = 1:M
 ]
 
 
@@ -392,5 +447,5 @@ income_lst = [0.0002*init_money*f(t) for t = 1:T]
 #   適応の結果ポートフォリオ配分目標に占める預金の割合がとても大きくなる。そして売買が減り、値動きが激減する
 for t = 1:T
     income = income_lst[t]
-    run_one_term(agents, firms, income, f(t))
+    run_one_term(agents, firms, income)
 end
