@@ -66,43 +66,36 @@ function cal_sharesRetainedLine(agents, firms)
 end
 function fundamentals_trade_offer(agent, firms, j, all_marketCap_sum)
     lst = []
-    marketCap, mean_log10e_amp, fundamentals_sum = 0.0, 0.0, 0.0
+    marketCap, mean_amp = 0.0, 0.0
     for (i, firm) in enumerate(firms)
         marketCap = firm.marketCapitalization
         fundamentals = agent.fundamentals[i]
         push!(lst, (marketCap/fundamentals, i))    #   marketCap/fundamentalsが小さいほど買いたい、大きいほど売りたい
-        mean_log10e_amp += log(50ℯ ,marketCap/fundamentals)    #   底をℯにすると、mean_log10e_ampが乱高下する。底が大きいものを採用した。
-        fundamentals_sum += fundamentals
+        mean_amp += marketCap/fundamentals
     end
-    mean_log10e_amp /= size(firms)[1]
+    mean_amp /= size(firms)[1]
     sell, buy = [], []
-    #   全部売り候補に入れて、ポートフォリオ配分目標に至るまで買い候補に入れて、その差額を本チャンの売買リストに加える
-    #   すべて仮売り。
-    marketCap_sum = 0.0
+    #   全部売り候補に入れて、ポートフォリオ配分目標に至るまで買い候補に入れて、その差量を本チャンの売買リストに加える
+    #   持ってる株をすべて仮売り。
     for (i,q) in enumerate(agent.sharesQuantity)
         if q > 0.0
-            marketCap_sum = firms[i].marketCapitalization
+            p = 0.2*mean_amp*agent.fundamentals[i]/firms[i].stockQuantity + 0.8*firms[i].stockPrice
+            push!(sell, (i, p, q))
         end
     end
-    for (i,q) in enumerate(agent.sharesQuantity)
-        if q > 0.0
-            if rand() < sqrt(firms[i].marketCapitalization/marketCap_sum)
-                p = min(firms[i].stockPrice, (0.2*exp(mean_log10e_amp)*agent.fundamentals[i]/firms[i].stockQuantity + 0.8*firms[i].stockPrice))
-                push!(sell, (i, p, q))
-            end
-        end
-    end
-    #   仮買い。
+    #   ポートフォリオ配分目標に達するまで仮買い。
     sort!(lst)
     allocations_lst = [0.0 for _ = 1:size(firms)[1]]
     counter = 0
-    for k in 1:size(lst)[1]
-        _, i = lst[k]
-        if rand() < sqrt(firms[i].marketCapitalization/all_marketCap_sum)   #   規模の大きい企業ほど売買の対象になりやすいようにする
-            allocations_lst[i] = agent.portfolio_target[2]*agent.fundamentals[i]/fundamentals_sum
-            counter += 1
-            if counter == Integer(agent.params[end])
-                break
+    while counter < Integer(agent.params[end])
+        for k in 1:size(lst)[1]
+            _, i = lst[k]
+            if rand()*(1.0 - k/size(lst)[1]) < firms[i].marketCapitalization/all_marketCap_sum   #   規模の大きい企業ほど買いやすいように、割安判断をした企業ほど買いやすいようにする
+                allocations_lst[i] += agent.portfolio_target[2]/agent.params[end]
+                counter += 1
+                if counter == Integer(agent.params[end])
+                    break
+                end
             end
         end
     end
@@ -111,7 +104,7 @@ function fundamentals_trade_offer(agent, firms, j, all_marketCap_sum)
         if allocations_lst[i] == 0.0
             continue
         end
-        p = (0.2*exp(mean_log10e_amp)*agent.fundamentals[i] + 0.8*firms[i].marketCapitalization)/(firms[i].stockQuantity)
+        p = 0.2*mean_amp*agent.fundamentals[i]/firms[i].stockQuantity + 0.8*firms[i].stockPrice
         q = allocations_lst[i]/p
         push!(buy, (i, p, q))
     end
@@ -167,21 +160,19 @@ function chart_trade_offer(agent, firms, j, all_marketCap_sum)
         end
         price = (1+p)*firms[i].stockPrice
         quantity = agent.sharesQuantity[i]
-        if price <= 0.0 || quantity == 0.0
-            continue
-        else
+        if price > 0.0 && quantity > 0.0
             push!(sell_2, (p, i))
+            marketCap_sum += firms[i].marketCapitalization
         end
-        marketCap_sum += firms[i].marketCapitalization
     end
     going_to_sell_price = 0.0
     for (p, i) in sell_2
-        if agent.money < 0.0
+        if agent.money < 0.0 && p > 0.0
             p = 0.0
         end
         price = (1+p)*firms[i].stockPrice
         quantity = agent.sharesQuantity[i]
-        if rand() < sqrt(firms[i].marketCapitalization/marketCap_sum)
+        if rand() < firms[i].marketCapitalization/marketCap_sum
             going_to_sell_price += price * quantity
             push!(firms[i].sell_offers, (price, quantity, j))
         end
@@ -191,9 +182,7 @@ function chart_trade_offer(agent, firms, j, all_marketCap_sum)
         x1, x2, x3, x4, x5, x6 = firm.stockPriceLog[end-5:end]
         p = α0 + α1*(x2-x1)/x1 + α2*(x3-x2)/x2 + α3*(x4-x3)/x3 + α4*(x5-x4)/x4 + α5*(x6-x5)/x5
         if p > β2
-            if rand() < sqrt(firm.marketCapitalization/all_marketCap_sum)
-                push!(buy, (p,i))
-            end
+            push!(buy, (p,i))
         end
     end
     sort!(buy)
@@ -267,18 +256,27 @@ function trade_matching(agents, firms)
             buying_q -= trading_q
             selling_q -= trading_q
             trading_p = (pb + ps)/2
-            agents[jb].purchase_cost[i] = (agents[jb].purchase_cost[i]*agents[jb].sharesQuantity[i] + trading_p*trading_q)/(agents[jb].sharesQuantity[i] + trading_q)
-            agents[jb].sharesQuantity[i] += trading_q
-            agents[js].sharesQuantity[i] -= trading_q
-            agents[jb].money -= trading_p*trading_q
-            tax, tax_rate = 0.0, 0.2
-            if agents[js].purchase_cost[i] < trading_p
-                tax = tax_rate*trading_q*(trading_p - agents[js].purchase_cost[i])
+            if jb < 0   #   企業自身からのオファー
+                firms[-jb].stockQuantity -= trading_q
+            else
+                agents[jb].purchase_cost[i] = (agents[jb].purchase_cost[i]*agents[jb].sharesQuantity[i] + trading_p*trading_q)/(agents[jb].sharesQuantity[i] + trading_q)
+                agents[jb].sharesQuantity[i] += trading_q
+                agents[jb].money -= trading_p*trading_q
             end
-            agents[js].money += trading_p*trading_q - tax
+            if js < 0
+                firms[-js].stockQuantity += trading_q
+            else
+                agents[js].sharesQuantity[i] -= trading_q
+                tax, tax_rate = 0.0, 0.2
+                if agents[js].purchase_cost[i] < trading_p
+                    tax = tax_rate*trading_q*(trading_p - agents[js].purchase_cost[i])
+                end
+                agents[js].money += trading_p*trading_q - tax
+            end
         end
         firm.stockPrice = trading_p
         push!(firm.stockPriceLog, trading_p)
+        push!(firm.stockQuantityLog, firm.stockQuantity)
     end
 end
 function update_strategy(agents)
@@ -294,6 +292,15 @@ function update_strategy(agents)
             agent.strategy = new_strategy
             new_params = append!([agent.params[1]], agents[teacher].params[2:end])
             agent.params = new_params
+        end
+        if rand() < 0.001
+            if agent.strategy == "chart"
+                agent.strategy = "fundamentals"
+                agent.params = [0.9, 5]
+            else
+                agent.strategy = "chart"
+                agent.params = [0.9, 1, randn(), randn(), randn(), randn(), randn(), 0.0, -0.01, 0.01, 0.5, 5]
+            end
         end
     end
 end
@@ -360,11 +367,26 @@ function cal_all_marketCap_sum(firms)
     end
     return all_marketCap_sum
 end
+function share_buy_back_and_share_issue_offer(firms)
+    for (i, firm) in enumerate(firms)
+        t = rand()
+        if t < 0.1
+            quantity = 0.05*firm.stockQuantity
+            price = 0.95*firm.stockPrice
+            push!(firm.buy_offers, (price, quantity, -i))
+        elseif t > 0.9
+            quantity = 0.05*firm.stockQuantity
+            price = 1.05*firm.stockPrice
+            push!(firm.sell_offers, (price, quantity, -i))
+        end
+    end
+end
 function run_one_term(agents, firms, income)
     all_marketCap_sum = cal_all_marketCap_sum(firms)
     update_hiddenCorporateValue(firms)
     update_estimate_corporateValue(agents, firms)
     trade_offer(agents, firms, all_marketCap_sum)
+    share_buy_back_and_share_issue_offer(firms)
     trade_matching(agents, firms)
     get_dividend(agents, firms)
     cal_sharesRetainedLine(agents, firms)
@@ -383,7 +405,7 @@ end
 
 
 
-N, M = 10^3, 10^1 #   エージェント数, 株式会社数
+N, M = 10^2, 10^1 #   エージェント数, 株式会社数
 init_stock_quantity, init_stock_price = 100.0, 1.0
 init_money = init_stock_quantity*init_stock_price*M/N * 9.0
 
@@ -441,7 +463,7 @@ firms = [
 
 
 
-T = 10^3
+T = 10^4
 income_lst = [0.0002*init_money*f(t) for t = 1:T] 
 #   income=constantだと、金融市場の規模が継続的に大きく（小さく）ならないためか、
 #   適応の結果ポートフォリオ配分目標に占める預金の割合がとても大きくなる。そして売買が減り、値動きが激減する
