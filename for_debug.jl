@@ -376,7 +376,7 @@ function share_buy_back_and_share_issue_offer(firms)
             push!(firm.buy_offers, (price, quantity, -i))
         elseif t > 0.9
             quantity = 0.05*firm.stockQuantity
-            price = 1.05*firm.stockPrice
+            price = 1.00*firm.stockPrice
             push!(firm.sell_offers, (price, quantity, -i))
         end
     end
