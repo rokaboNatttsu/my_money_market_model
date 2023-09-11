@@ -79,7 +79,7 @@ function fundamentals_trade_offer(agent, firms, j, all_marketCap_sum)
     #   持ってる株をすべて仮売り。
     for (i,q) in enumerate(agent.sharesQuantity)
         if q > 0.0
-            p = 0.2*mean_amp*agent.fundamentals[i]/firms[i].stockQuantity + 0.8*firms[i].stockPrice
+            p = 0.5*mean_amp*agent.fundamentals[i]/firms[i].stockQuantity + 0.5*firms[i].stockPrice
             push!(sell, (i, p, q))
         end
     end
@@ -104,7 +104,7 @@ function fundamentals_trade_offer(agent, firms, j, all_marketCap_sum)
         if allocations_lst[i] == 0.0
             continue
         end
-        p = 0.2*mean_amp*agent.fundamentals[i]/firms[i].stockQuantity + 0.8*firms[i].stockPrice
+        p = 0.5*mean_amp*agent.fundamentals[i]/firms[i].stockQuantity + 0.5*firms[i].stockPrice
         q = allocations_lst[i]/p
         push!(buy, (i, p, q))
     end
@@ -132,7 +132,7 @@ function fundamentals_trade_offer(agent, firms, j, all_marketCap_sum)
         end
     end
 end
-function chart_trade_offer(agent, firms, j, all_marketCap_sum)
+function chart_trade_offer(agent, firms, j)
     span = agent.params[2]
     if size(firms[1].stockPriceLog)[1] < span*6
         return nothing
@@ -218,7 +218,7 @@ function trade_offer(agents, firms, all_marketCap_sum)
         if agent.strategy == "fundamentals"
             fundamentals_trade_offer(agent, firms, j, all_marketCap_sum)
         elseif agent.strategy == "chart"
-            chart_trade_offer(agent, firms, j, all_marketCap_sum)
+            chart_trade_offer(agent, firms, j)
         end
     end
 end
@@ -376,7 +376,7 @@ function share_buy_back_and_share_issue_offer(firms)
             push!(firm.buy_offers, (price, quantity, -i))
         elseif t > 0.9
             quantity = 0.05*firm.stockQuantity
-            price = 1.00*firm.stockPrice
+            price = 1.05*firm.stockPrice
             push!(firm.sell_offers, (price, quantity, -i))
         end
     end
